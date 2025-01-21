@@ -1,4 +1,4 @@
-# feather
+# Nocturne
 ultra-fast HTTP/ASGI Web Framework.
 
 > [!IMPORTANT]
