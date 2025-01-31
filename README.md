@@ -8,6 +8,7 @@ Supports asyncio/trio (Powered by AnyIO).
 > Nocturne implements an early standalone HTTP/1.1, Websocket server, but it is not perfect and should not be used in a production environment.
 - Native HTTP Implementation (Non-ASGI/Standalone Mode)
 - Fast HTTP Routing 
+- Simple, easy-to-use dependency injection
 ## Todo
 - [ ] Implement HTTP
   - [x] HTTP/1

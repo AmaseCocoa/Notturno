@@ -1,6 +1,6 @@
 import asyncio
 import inspect
-from functools import partial
+from functools import partial, wraps
 from http.client import responses
 from typing import Any, Callable, Dict
 
@@ -20,6 +20,7 @@ from .utils.query import parse_qs
 class Nocturne:
     def __init__(self, async_backend: str = "asyncio"):
         self._router = RegExpRouter()
+        self.dependencies = {}
         self._internal_router = RegExpRouter()
         self.http = NoctServ(self)
         self.async_backend = async_backend
@@ -38,6 +39,20 @@ class Nocturne:
             self._internal_router.combine(cls._internal_router)
         else:
             raise TypeError(f"Nocturne.Nocturne or Nocturne.Gear required, but got {cls.__class__}")
+
+    def add_dependency(self, name: str, instance):
+        self.dependencies[name] = instance
+
+    def di(self, *dependency_names):
+        def decorator(func):
+            @wraps(func)
+            async def wrapper(*args, **kwargs):
+                for name in dependency_names:
+                    if name in self.dependencies:
+                        kwargs[name] = self.dependencies[name]
+                return await func(*args, **kwargs)
+            return wrapper
+        return decorator
 
     async def __asgi_http_handle(self, scope: Dict[str, Any], receive: Any, send: Any):
         route, params = await self.resolve(scope["method"], scope["path"])
