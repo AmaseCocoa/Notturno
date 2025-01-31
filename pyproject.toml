@@ -1,0 +1,40 @@
+[project]
+name = "nocturne"
+version = "0.1.0"
+description = "ultra-fast HTTP/ASGI Web Framework."
+authors = [
+    {name = "AmaseCocoa", email = "cocoa@amase.cc"},
+]
+dependencies = ["pydantic>=2.10.6", "anyio>=4.8.0", "yarl>=1.18.3", "h2>=4.1.0", "aiomultiprocess>=0.9.1", "google-re2>=1.1.20240702"]
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+
+[project.optional-dependencies]
+speed = [
+    "orjson>=3.10.15",
+    "fast-query-parsers>=1.0.3",
+]
+trio = [
+    "trio>=0.28.0",
+]
+asgi = [
+    "uvicorn>=0.34.0",
+]
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.pdm]
+distribution = true
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+]
+bench = [
+    "fastapi>=0.115.8",
+    "sanic>=24.12.0",
+    "quart>=0.20.0",
+    "litestar>=2.14.0",
+]
