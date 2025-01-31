@@ -6,7 +6,6 @@ from anyio.streams.tls import TLSListener, TLSStream
 from anyio._backends._asyncio import SocketStream as AIOSocketStream
 from anyio._backends._trio import SocketStream as TrioSocketStream
 
-
 class NoctServ:
     def __init__(self, handler):
         self.handler = handler

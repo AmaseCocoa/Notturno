@@ -1,6 +1,5 @@
 import re2
 
-
 class RegExpRouter:
     def __init__(self, root_path: str = ""):
         self.routes = {}
