@@ -1,9 +1,10 @@
 from typing import Any, Dict
 
-class NocturneASGI:
+
+class NotturnoASGI:
     def __init__(self, router):
         self.router = router
-    
+
     async def _http(self, scope: Dict[str, Any], receive: Any, send: Any):
         pass
 

@@ -1,6 +1,6 @@
 [project]
-name = "nocturne"
-version = "0.1.0"
+name = "notturno"
+version = "0.1.1"
 description = "ultra-fast HTTP/ASGI Web Framework."
 authors = [
     {name = "AmaseCocoa", email = "cocoa@amase.cc"},

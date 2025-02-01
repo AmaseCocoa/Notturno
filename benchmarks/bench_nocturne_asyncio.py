@@ -1,6 +1,7 @@
-from nocturne import Nocturne
+from notturno import Notturno
 
-app = Nocturne()
+app = Notturno()
+
 
 @app.get("/")
 async def index():

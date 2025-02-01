@@ -5,7 +5,6 @@ from http.client import responses
 from typing import Any, Callable, Dict
 
 import anyio
-
 from yarl import URL
 
 from .core.http.serv import NoctServ
@@ -17,7 +16,7 @@ from .utils import jsonenc
 from .utils.query import parse_qs
 
 
-class Nocturne:
+class Notturno:
     def __init__(self, async_backend: str = "asyncio"):
         self._router = RegExpRouter()
         self.dependencies = {}
@@ -28,17 +27,19 @@ class Nocturne:
         self.__is_main = self.__is_non_gear()
 
     def __is_non_gear(self):
-        if isinstance(self, Nocturne) and type(self) is Nocturne:
+        if isinstance(self, Notturno) and type(self) is Notturno:
             return True
         else:
             return False
-        
+
     def merge_route(self, cls):
-        if isinstance(cls, Nocturne):
+        if isinstance(cls, Notturno):
             self._router.combine(cls._router)
             self._internal_router.combine(cls._internal_router)
         else:
-            raise TypeError(f"Nocturne.Nocturne or Nocturne.Gear required, but got {cls.__class__}")
+            raise TypeError(
+                f"Notturno.Notturno or Notturno.Gear required, but got {cls.__class__}"
+            )
 
     def add_dependency(self, name: str, instance):
         self.dependencies[name] = instance
@@ -51,31 +52,40 @@ class Nocturne:
                     if name in self.dependencies:
                         kwargs[name] = self.dependencies[name]
                 return await func(*args, **kwargs)
+
             return wrapper
+
         return decorator
 
     async def __asgi_http_handle(self, scope: Dict[str, Any], receive: Any, send: Any):
         route, params = await self.resolve(scope["method"], scope["path"])
         if not route:
-            await send({
-                'type': 'http.response.start',
-                'status': 404,
-                'headers': [[b"Content-Type", b"text/plain"]],
-            })
-            await send({
-                'type': 'http.response.body',
-                'body': b"Not Found",
-                'more_body': False,
-            })
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 404,
+                    "headers": [[b"Content-Type", b"text/plain"]],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"Not Found",
+                    "more_body": False,
+                }
+            )
             return
-        response_body = b''
+        response_body = b""
         while True:
             message = await receive()
-            response_body += message.get('body', b'')
-            if not message.get('more_body', False):
+            response_body += message.get("body", b"")
+            if not message.get("more_body", False):
                 break
-        response_body_string = response_body.decode('utf-8')
-        headers = {key.decode('utf-8'): value.decode('utf-8') for key, value in scope["headers"]}
+        response_body_string = response_body.decode("utf-8")
+        headers = {
+            key.decode("utf-8"): value.decode("utf-8")
+            for key, value in scope["headers"]
+        }
         arg_name = await self.__route(func=route, is_type=Request)
         if arg_name:
             req = Request(
@@ -96,7 +106,7 @@ class Nocturne:
                 resp.body = jsonenc.dumps(resp)
                 content_type = "application/json"
             elif isinstance(resp.body, list):
-                resp.body = b"".join([s.encode('utf-8') for s in resp.body])
+                resp.body = b"".join([s.encode("utf-8") for s in resp.body])
                 content_type = "application/json"
             elif isinstance(resp.body, str):
                 resp.body = resp.body.encode()
@@ -104,7 +114,7 @@ class Nocturne:
             elif isinstance(resp.body, bytes):
                 content_type = "application/octet-stream"
             elif isinstance(resp.body, int) or isinstance(resp.body, float):
-                resp.body = resp.body.to_bytes(4, byteorder='big')
+                resp.body = resp.body.to_bytes(4, byteorder="big")
                 content_type = "text/plain"
             else:
                 content_type = "application/octet-stream"
@@ -113,79 +123,106 @@ class Nocturne:
                     resp.headers["Content-Type"] = resp.content_type
                 elif content_type:
                     resp.headers["Content-Type"] = content_type
-            await send({
-                'type': 'http.response.start',
-                'status': resp.status_code,
-                'headers': [[key.encode('utf-8'), value.encode('utf-8')] for key, value in resp.headers.items()],
-            })
-            await send({
-                'type': 'http.response.body',
-                'body': resp.body,
-                'more_body': False,
-            })
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": resp.status_code,
+                    "headers": [
+                        [key.encode("utf-8"), value.encode("utf-8")]
+                        for key, value in resp.headers.items()
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": resp.body,
+                    "more_body": False,
+                }
+            )
         elif isinstance(resp, dict):
-            await send({
-                'type': 'http.response.start',
-                'status': 200,
-                'headers': [[b'content-type', b'application/json']],
-            })
-            await send({
-                'type': 'http.response.body',
-                'body': jsonenc.dumps(resp),
-                'more_body': False,
-            })
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [[b"content-type", b"application/json"]],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": jsonenc.dumps(resp),
+                    "more_body": False,
+                }
+            )
 
         elif isinstance(resp, str):
-            await send({
-                'type': 'http.response.start',
-                'status': 200,
-                'headers': [[b'content-type', b'text/plain']],
-            })
-            await send({
-                'type': 'http.response.body',
-                'body': resp.encode(),
-                'more_body': False,
-            })
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [[b"content-type", b"text/plain"]],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": resp.encode(),
+                    "more_body": False,
+                }
+            )
         elif not resp:
-            await send({
-                'type': 'http.response.start',
-                'status': 200,
-                'headers': [[b'content-type', b'text/plain']],
-            })
-            await send({
-                'type': 'http.response.body',
-                'body': b"",
-                'more_body': False,
-            })
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [[b"content-type", b"text/plain"]],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"",
+                    "more_body": False,
+                }
+            )
         if isinstance(resp, tuple):
             if len(resp) == 2:
                 if isinstance(resp[0], dict) and isinstance(resp[1], int):
-                    await send({
-                        'type': 'http.response.start',
-                        'status': resp[1],
-                        'headers': [[b'content-type', b'application/json']],
-                    })
-                    await send({
-                        'type': 'http.response.body',
-                        'body': jsonenc.dumps(resp[0]),
-                        'more_body': False,
-                    })
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": resp[1],
+                            "headers": [[b"content-type", b"application/json"]],
+                        }
+                    )
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": jsonenc.dumps(resp[0]),
+                            "more_body": False,
+                        }
+                    )
                 elif isinstance(resp[0], str) and isinstance(resp[1], int):
-                    await send({
-                        'type': 'http.response.start',
-                        'status': resp[1],
-                        'headers': [[b'content-type', b'text/plain']],
-                    })
-                    await send({
-                        'type': 'http.response.body',
-                        'body': resp[0].encode(),
-                        'more_body': False,
-                    })
-        
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": resp[1],
+                            "headers": [[b"content-type", b"text/plain"]],
+                        }
+                    )
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": resp[0].encode(),
+                            "more_body": False,
+                        }
+                    )
+
     async def __call__(self, scope: Dict[str, Any], receive: Any, send: Any):
         if not self.__is_main:
             raise TypeError(
-                "You cannot start a server with anything nocturne.Gear as your main."
+                "You cannot start a server with anything Notturno.Gear as your main."
             )
         if scope["type"] == "http":
             await self.__asgi_http_handle(scope, receive, send)
@@ -354,7 +391,7 @@ class Nocturne:
     ) -> None:
         if not self.__is_main:
             raise TypeError(
-                "You cannot start a server with anything nocturne.Gear as your main."
+                "You cannot start a server with anything Notturno.Gear as your main."
             )
         self.__server_hide = hide_server_version
         self.ssl = ssl
