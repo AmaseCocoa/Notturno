@@ -5,7 +5,7 @@ description = "ultra-fast HTTP/ASGI Web Framework."
 authors = [
     {name = "AmaseCocoa", email = "cocoa@amase.cc"},
 ]
-dependencies = ["pydantic>=2.10.6", "anyio>=4.8.0", "yarl>=1.18.3", "h2>=4.1.0", "aiomultiprocess>=0.9.1", "google-re2>=1.1.20240702"]
+dependencies = ["pydantic>=2.10.6,<3", "anyio>=4.8.0,<5", "yarl>=1.18.3,<2"]
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}
@@ -39,14 +39,19 @@ Changelog = "https://github.com/AmaseCocoa/Notturno/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 speed = [
-    "orjson>=3.10.15",
-    "fast-query-parsers>=1.0.3",
+    "orjson>=3.10.15,<4",
+    "fast-query-parsers>=1.0.3,<2",
+    "google-re2>=1.1.20240702,<2"
 ]
 trio = [
-    "trio>=0.28.0",
+    "trio>=0.28.0,<1",
 ]
 asgi = [
-    "uvicorn>=0.34.0",
+    "uvicorn>=0.34.0,<1",
+]
+template = [
+    "jinja2>=3.1.5,<4",
+    "mako>=1.3.8,<2",
 ]
 [build-system]
 requires = ["setuptools>=61"]
@@ -67,3 +72,6 @@ bench = [
     "winloop>=0.1.8",
     "blacksheep>=2.0.8",
 ]
+
+[tool.ruff]
+target-version = "py310"
