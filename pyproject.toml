@@ -1,6 +1,6 @@
 [project]
 name = "notturno"
-version = "0.1.1"
+version = "0.1.2"
 description = "ultra-fast HTTP/ASGI Web Framework."
 authors = [
     {name = "AmaseCocoa", email = "cocoa@amase.cc"},
@@ -9,6 +9,33 @@ dependencies = ["pydantic>=2.10.6", "anyio>=4.8.0", "yarl>=1.18.3", "h2>=4.1.0",
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}
+keywords = ["asgi", "http", "http-server", "asgi-framework"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+
+  "Intended Audience :: Developers",
+  "Framework :: AnyIO",
+  "Framework :: Trio",
+  "Framework :: AsyncIO",
+
+  "Topic :: Software Development :: Libraries",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+
+  "License :: OSI Approved :: MIT License",
+
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+#Homepage = "https://noct.amase.cc"
+#Documentation = "https://noct.amase.cc/docs"
+Repository = "https://github.com/AmaseCocoa/Notturno"
+Issues = "https://github.com/AmaseCocoa/Notturno/issues"
+Changelog = "https://github.com/AmaseCocoa/Notturno/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 speed = [
