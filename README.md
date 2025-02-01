@@ -3,6 +3,22 @@ ultra-fast HTTP/ASGI Web Framework.
 
 Supports asyncio/trio (Powered by AnyIO).
 
+## Install
+Notturno is available on PyPI.
+```
+pip install notturno
+```
+
+To install additional libraries for speed
+```
+pip install notturno[speed]
+```
+
+When using a template engine (Jinja2 or Mako)
+```
+pip install notturno[template]
+```
+
 ## Feature
 > [!IMPORTANT]
 > Notturno implements an early standalone HTTP/1.1, Websocket server, but it is not perfect and should not be used in a production environment.
