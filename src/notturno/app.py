@@ -17,7 +17,7 @@ from .utils.query import parse_qs
 
 
 class Notturno:
-    def __init__(self, async_backend: str = "asyncio"):
+    def __init__(self, async_backend: str = "asyncio", lifespan=None):
         self._router = RegExpRouter()
         self.dependencies = {}
         self._internal_router = RegExpRouter()
@@ -25,6 +25,8 @@ class Notturno:
         self.async_backend = async_backend
         self.__server_hide = None
         self.__is_main = self.__is_non_gear()
+        self.lifespan = lifespan
+        self.middlewares = []
 
     def __is_non_gear(self):
         if isinstance(self, Notturno) and type(self) is Notturno:
@@ -32,10 +34,14 @@ class Notturno:
         else:
             return False
 
-    def merge_route(self, cls):
+    def merge(self, cls):
         if isinstance(cls, Notturno):
             self._router.combine(cls._router)
             self._internal_router.combine(cls._internal_router)
+            cls.dependencies.update(self.dependencies)
+            self.dependencies.update(cls.dependencies)
+            cls.middlewares += self.middlewares
+            self.middlewares += cls.middlewares
         else:
             raise TypeError(
                 f"Notturno.Notturno or Notturno.Gear required, but got {cls.__class__}"
@@ -44,18 +50,58 @@ class Notturno:
     def add_dependency(self, name: str, instance):
         self.dependencies[name] = instance
 
-    def di(self, *dependency_names):
+    def inject(self, *dependency_names):
+        """Injects dependencies into the granted function"""
+
         def decorator(func):
             @wraps(func)
             async def wrapper(*args, **kwargs):
-                for name in dependency_names:
-                    if name in self.dependencies:
-                        kwargs[name] = self.dependencies[name]
+                #                for name in dependency_names:
+                #                    if name in self.dependencies:
+                #                        kwargs[name] = self.dependencies[name]
+                kwargs.update(
+                    {
+                        name: self.dependencies[name]
+                        for name in dependency_names
+                        if name in self.dependencies
+                    }
+                )
                 return await func(*args, **kwargs)
 
             return wrapper
 
         return decorator
+
+    async def __asgi_lifespan_handle(
+        self, scope: Dict[str, Any], receive: Any, send: Any
+    ):
+        if self.lifespan:
+            gen = self.lifespan(self)
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    try:
+                        await anext(gen)
+                    except StopAsyncIteration:
+                        pass
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    try:
+                        await anext(gen)
+                    except StopAsyncIteration:
+                        pass
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        else:
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+
+
 
     async def __asgi_http_handle(self, scope: Dict[str, Any], receive: Any, send: Any):
         route, params = await self.resolve(scope["method"], scope["path"])
@@ -75,6 +121,7 @@ class Notturno:
                 }
             )
             return
+        req = None
         response_body = b""
         while True:
             message = await receive()
@@ -86,138 +133,102 @@ class Notturno:
             key.decode("utf-8"): value.decode("utf-8")
             for key, value in scope["headers"]
         }
-        arg_name = await self.__route(func=route, is_type=Request)
-        if arg_name:
-            req = Request(
-                method=scope["method"],
-                url=f"{scope['scheme']}://{headers['host']}{scope['path']}",
-                headers=headers,
-                query=parse_qs(scope["query_string"]),
-                body=response_body_string,
-            )
-            params[arg_name] = req
-        if asyncio.iscoroutinefunction(route):
-            resp = await route(**params)
-        else:
-            resp = route(**params)
-        if isinstance(resp, Response):
-            content_type = None
-            if isinstance(resp.body, dict):
-                resp.body = jsonenc.dumps(resp)
-                content_type = "application/json"
-            elif isinstance(resp.body, list):
-                resp.body = b"".join([s.encode("utf-8") for s in resp.body])
-                content_type = "application/json"
-            elif isinstance(resp.body, str):
-                resp.body = resp.body.encode()
-                content_type = "text/plain"
-            elif isinstance(resp.body, bytes):
-                content_type = "application/octet-stream"
-            elif isinstance(resp.body, int) or isinstance(resp.body, float):
-                resp.body = resp.body.to_bytes(4, byteorder="big")
-                content_type = "text/plain"
-            else:
-                content_type = "application/octet-stream"
-            if not resp.headers.get("Content-Type"):
-                if resp.content_type:
-                    resp.headers["Content-Type"] = resp.content_type
-                elif content_type:
-                    resp.headers["Content-Type"] = content_type
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": resp.status_code,
-                    "headers": [
-                        [key.encode("utf-8"), value.encode("utf-8")]
-                        for key, value in resp.headers.items()
-                    ],
-                }
-            )
-            await send(
-                {
-                    "type": "http.response.body",
-                    "body": resp.body,
-                    "more_body": False,
-                }
-            )
-        elif isinstance(resp, dict):
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [[b"content-type", b"application/json"]],
-                }
-            )
-            await send(
-                {
-                    "type": "http.response.body",
-                    "body": jsonenc.dumps(resp),
-                    "more_body": False,
-                }
-            )
 
-        elif isinstance(resp, str):
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [[b"content-type", b"text/plain"]],
-                }
-            )
-            await send(
-                {
-                    "type": "http.response.body",
-                    "body": resp.encode(),
-                    "more_body": False,
-                }
-            )
-        elif not resp:
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [[b"content-type", b"text/plain"]],
-                }
-            )
-            await send(
-                {
-                    "type": "http.response.body",
-                    "body": b"",
-                    "more_body": False,
-                }
-            )
-        if isinstance(resp, tuple):
-            if len(resp) == 2:
-                if isinstance(resp[0], dict) and isinstance(resp[1], int):
-                    await send(
-                        {
-                            "type": "http.response.start",
-                            "status": resp[1],
-                            "headers": [[b"content-type", b"application/json"]],
-                        }
+        arg_name = await self.__route(func=route, is_type=Request)
+        if self.middleware:
+            if self.middleware != []:
+                req = Request(
+                    method=scope["method"],
+                    url=f"{scope['scheme']}://{headers['host']}{scope['path']}",
+                    headers=headers,
+                    query=parse_qs(scope["query_string"]),
+                    body=response_body_string,
+                )
+                route = partial(route, **params)
+                async def call_next(request):
+                    if arg_name:
+                        return await route(**{arg_name: request})
+                    else:
+                        return await route()
+                for middleware in reversed(self.middlewares):
+                    call_next = partial(middleware, call_next=call_next)
+                resp = await call_next(req)
+        else:
+            if arg_name:
+                if not req:
+                    req = Request(
+                        method=scope["method"],
+                        url=f"{scope['scheme']}://{headers['host']}{scope['path']}",
+                        headers=headers,
+                        query=parse_qs(scope["query_string"]),
+                        body=response_body_string,
                     )
-                    await send(
-                        {
-                            "type": "http.response.body",
-                            "body": jsonenc.dumps(resp[0]),
-                            "more_body": False,
-                        }
-                    )
-                elif isinstance(resp[0], str) and isinstance(resp[1], int):
-                    await send(
-                        {
-                            "type": "http.response.start",
-                            "status": resp[1],
-                            "headers": [[b"content-type", b"text/plain"]],
-                        }
-                    )
-                    await send(
-                        {
-                            "type": "http.response.body",
-                            "body": resp[0].encode(),
-                            "more_body": False,
-                        }
-                    )
+                params[arg_name] = req
+            if asyncio.iscoroutinefunction(route):
+                resp = await route(**params)
+            else:
+                resp = route(**params)
+        resp = await self.__convert_response(resp)
+        content_type = None
+        if isinstance(resp.body, dict):
+            resp.body = jsonenc.dumps(resp)
+            content_type = "application/json"
+        elif isinstance(resp.body, list):
+            resp.body = b"".join([s.encode("utf-8") for s in resp.body])
+            content_type = "application/json"
+        elif isinstance(resp.body, str):
+            resp.body = resp.body.encode()
+            content_type = "text/plain"
+        elif isinstance(resp.body, bytes):
+            content_type = "application/octet-stream"
+        elif isinstance(resp.body, int) or isinstance(resp.body, float):
+            resp.body = resp.body.to_bytes(4, byteorder="big")
+            content_type = "text/plain"
+        else:
+            content_type = "application/octet-stream"
+        if not resp.headers.get("Content-Type"):
+            if resp.content_type:
+                resp.headers["Content-Type"] = resp.content_type
+            elif content_type:
+                resp.headers["Content-Type"] = content_type
+        await send(
+            {
+                "type": "http.response.start",
+                "status": resp.status_code,
+                "headers": [
+                    [key.encode("utf-8"), value.encode("utf-8")]
+                    for key, value in resp.headers.items()
+                ],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": resp.body,
+                "more_body": False,
+            }
+        )
+
+    def add_middleware(self, func):
+        self.middlewares.append(func)
+    
+    def middleware(self):
+        def decorator(func):
+            self.middlewares.append(func)
+            return func
+        return decorator
+
+
+    async def __convert_response(self, response):
+        if isinstance(response, Response):
+            return response
+        elif isinstance(response, tuple):
+            if len(response) == 2:
+                return Response(body=response[0], status_code=response[1])
+        elif isinstance(response, str) or isinstance(response, dict) or not response:
+            return Response(body=response, status_code=200)
+        else:
+            raise ValueError("Unsupported Response Object")
 
     async def __call__(self, scope: Dict[str, Any], receive: Any, send: Any):
         if not self.__is_main:
@@ -228,17 +239,18 @@ class Notturno:
             await self.__asgi_http_handle(scope, receive, send)
         elif scope["type"] == "websocket":
             pass
+        elif scope["type"] == "lifespan":
+            await self.__asgi_lifespan_handle(scope, receive, send)
 
     def __normalize_path(self, path: str) -> str:
         return path.rstrip("/")
 
     async def __route(self, func: Callable, is_type) -> Any:
-        signature = inspect.signature(func)
-        arg_name = None
-        for param_name, param in signature.parameters.items():
-            if param.annotation is is_type:
-                arg_name = param_name
-                break
+        # arg_name = None
+        # for param_name, param in signature.parameters.items():
+        #    if param.annotation is is_type:
+        #        arg_name = param_name
+        #        break
         # if request_arg_name is not None:
         #    kwargs[request_arg_name] = request_value
 
@@ -246,7 +258,14 @@ class Notturno:
         #    return await func(*args, **kwargs)
         # else:
         #    return func(*args, **kwargs)
-        return arg_name
+        return next(
+            (
+                param_name
+                for param_name, param in inspect.signature(func).parameters.items()
+                if param.annotation is is_type
+            ),
+            None,
+        )
 
     async def _native_http_handle(
         self, method: str, path, headers, body, http_version
