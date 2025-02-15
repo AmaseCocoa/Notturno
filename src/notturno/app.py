@@ -1,11 +1,7 @@
 import asyncio
 import inspect
 from functools import partial, wraps
-from http.client import responses
 from typing import Any, Callable, Dict
-
-import anyio
-from yarl import URL
 
 try:
     import uvicorn
@@ -17,20 +13,19 @@ from .core.router.regexp import RegExpRouter
 from .models.request import Request, from_asgi
 from .models.response import Response
 from .models.websocket import WebSocket
-from .utils import jsonenc
 from .types import LOOP
+from .utils import jsonenc
+
 
 class Notturno:
-    def __init__(self, async_backend: str = "asyncio", lifespan=None):
+    def __init__(self, lifespan=None):
         self._router = RegExpRouter()
         self.dependencies = {}
         self._internal_router = RegExpRouter()
-        self.http = NoctServ(self)
-        self.async_backend = async_backend
-        self.__server_hide = None
         self.__is_main = self.__is_non_gear()
         self.lifespan = lifespan
         self.middlewares = []
+        self.http = NoctServ(self)
 
     def __is_non_gear(self):
         if isinstance(self, Notturno) and type(self) is Notturno:
@@ -45,7 +40,9 @@ class Notturno:
             cls.dependencies.update(self.dependencies)
             self.dependencies.update(cls.dependencies)
             cls.middlewares += self.middlewares
+            cls.middlewares = list(set(cls.middlewares))
             self.middlewares += cls.middlewares
+            self.middlewares = list(set(self.middlewares))
         else:
             raise TypeError(
                 f"Notturno.Notturno or Notturno.Gear required, but got {cls.__class__}"
@@ -124,15 +121,17 @@ class Notturno:
             )
             return
         req = await from_asgi(scope, receive)
-        arg_name = await self.__route(func=route, is_type=Request)
+        arg_name = await self._route(func=route, is_type=Request)
         if self.middleware:
             if self.middleware != []:
                 route = partial(route, **params)
+
                 async def call_next(request):
                     if arg_name:
                         return await route(**{arg_name: request})
                     else:
                         return await route()
+
                 for middleware in reversed(self.middlewares):
                     call_next = partial(middleware, call_next=call_next)
                 resp = await call_next(req)
@@ -143,7 +142,7 @@ class Notturno:
                 resp = await route(**params)
             else:
                 resp = route(**params)
-        resp = await self.__convert_response(resp)
+        resp = await self._convert_response(resp)
         content_type = None
         if isinstance(resp.body, dict):
             resp.body = jsonenc.dumps(resp)
@@ -186,15 +185,15 @@ class Notturno:
 
     def add_middleware(self, func):
         self.middlewares.append(func)
-    
+
     def middleware(self):
         def decorator(func):
             self.middlewares.append(func)
             return func
+
         return decorator
 
-
-    async def __convert_response(self, response):
+    async def _convert_response(self, response):
         if isinstance(response, Response):
             return response
         elif isinstance(response, tuple):
@@ -220,19 +219,7 @@ class Notturno:
     def __normalize_path(self, path: str) -> str:
         return path.rstrip("/")
 
-    async def __route(self, func: Callable, is_type) -> Any:
-        # arg_name = None
-        # for param_name, param in signature.parameters.items():
-        #    if param.annotation is is_type:
-        #        arg_name = param_name
-        #        break
-        # if request_arg_name is not None:
-        #    kwargs[request_arg_name] = request_value
-
-        # if asyncio.iscoroutinefunction(func):
-        #    return await func(*args, **kwargs)
-        # else:
-        #    return func(*args, **kwargs)
+    async def _route(self, func: Callable, is_type) -> Any:
         return next(
             (
                 param_name
@@ -241,111 +228,6 @@ class Notturno:
             ),
             None,
         )
-
-    async def _native_http_handle(
-        self, method: str, path, headers, body, http_version
-    ) -> str:
-        route, params = await self.resolve(method.upper(), path)
-        if not route:
-            msg = "Not Found"
-            response = (
-                f"HTTP/1.1 404 NotFound\r\n"
-                "Content-Type: text/plain\r\n"
-                f"Content-Length: {len(msg)}\r\n"
-                "\r\n"
-                f"{msg}"
-            )
-            return response
-        url = URL(f"{'https' if self.ssl else 'http'}://{headers['Host']}/{path}")
-
-        arg_name = await self.__route(func=route, is_type=Request)
-        if arg_name:
-            req = Request(
-                method=method.upper(),
-                url=url,
-                headers=headers,
-                query={key: url.query.getlist(key) for key in url.query.keys()},
-                body=body,
-            )
-            params[arg_name] = req
-        if asyncio.iscoroutinefunction(route):
-            resp = await route(**params)
-        else:
-            resp = route(**params)
-        if isinstance(resp, Response):
-            content_type = None
-            if isinstance(resp.body, dict):
-                resp.body = jsonenc.dumps(resp)
-                content_type = "application/json"
-            elif isinstance(resp.body, list):
-                content_type = "application/json"
-            elif isinstance(resp.body, str):
-                content_type = "text/plain"
-            elif isinstance(resp.body, bytes):
-                content_type = "application/octet-stream"
-            elif isinstance(resp.body, int) or isinstance(resp.body, float):
-                content_type = "text/plain"
-            else:
-                content_type = "application/octet-stream"
-            resp_desc = responses.get(resp.status_code)
-            if not resp.headers.get("Content-Length"):
-                resp.headers["Content-Length"] = len(resp.body)
-            if not resp.headers.get("Content-Type"):
-                if resp.content_type:
-                    resp.headers["Content-Type"] = resp.content_type
-                elif content_type:
-                    resp.headers["Content-Type"] = content_type
-            if not self.__server_hide:
-                resp.headers["Server"] = "NoctServ/0.1.0"
-            else:
-                resp.headers["Server"] = "NoctServ"
-            headers = [f"{key}: {value}" for key, value in resp.headers.items()]
-            response = (
-                f"HTTP/1.1 {resp.status_code} {resp_desc if resp_desc else 'UNKNOWN'}\r\n"
-                f"{'\r\n'.join(headers)}\r\n"
-                "\r\n"
-                f"{resp.body}"
-            )
-        elif isinstance(resp, dict):
-            dumped = jsonenc.dumps(resp)
-            response = (
-                "HTTP/1.1 200 OK\r\n"
-                f"Content-Length: {len(dumped)}\r\n"
-                "Content-Type: application/json\r\n"
-                "\r\n"
-                f"{dumped}"
-            )
-        return response
-
-    async def _native_ws_handle(self, writer: asyncio.StreamWriter, reader: asyncio.StreamReader, path, headers, body, http_version):
-        if "Sec-WebSocket-Key" not in headers:
-            return "HTTP/1.1 400 Bad Request\r\nServer: NoctServe\r\n\r\nBad Request"
-        route, params = await self.__resolve_internal("WS", path)
-        if not route:
-            msg = "Not Found"
-            response = (
-                f"HTTP/1.1 404 NotFound\r\n"
-                "Content-Type: text/plain\r\n"
-                f"Content-Length: {len(msg)}\r\n"
-                "\r\n"
-                f"{msg}"
-            )
-            writer.write(response.encode("utf-8"))
-            await writer.drain()
-            await writer.close()
-            return
-        #raise NotImplementedError("Websocket Native Support is Non-Ready :(")
-        ws = WebSocket(path, headers, http_version)
-        ws._is_native = True
-        ws._webkey = headers.get("Sec-WebSocket-Key")
-        ws._reader = reader
-        ws._writer = writer
-        arg_name = await self.__route(func=route, is_type=WebSocket)
-        params[arg_name] = ws
-        if asyncio.iscoroutinefunction(route):
-            await route(**params)
-        else:
-            raise TypeError("Websocket is Only to use in coroutine function.")
 
     async def resolve(
         self, method: str, path: str
@@ -368,7 +250,7 @@ class Notturno:
 
         return decorator
 
-    async def __resolve_internal(
+    async def _resolve_internal(
         self, method: str, path: str
     ) -> tuple[None, dict] | tuple[Any | None, dict]:
         route = self._internal_router.match(path)
@@ -377,19 +259,21 @@ class Notturno:
         return (route.get(method)["func"], route.get(method)["params"])
 
     def serve_asgi(
-        self,
-        host: str = "127.0.0.1",
-        port: int = 8765,
-        loop: LOOP = "auto"
-    ) -> None: 
+        self, host: str = "127.0.0.1", port: int = 8765, loop: LOOP = "auto"
+    ) -> None:
         if uvicorn:
             if loop == "winloop":
                 import platform
+
                 if platform.system() == "Windows":
-                    uvicorn.config.LOOP_SETUPS["winloop"] = "notturno.loops.winloop:winloop_setup"
+                    uvicorn.config.LOOP_SETUPS["winloop"] = (
+                        "notturno.loops.winloop:winloop_setup"
+                    )
             uvicorn.run(host=host, port=port, loop=loop)
         else:
-            raise ModuleNotFoundError("uvicorn not found, can be installed with pip install uvicorn.")
+            raise ModuleNotFoundError(
+                "uvicorn not found, can be installed with pip install uvicorn."
+            )
 
     def serve(
         self,
@@ -404,20 +288,22 @@ class Notturno:
             raise TypeError(
                 "You cannot start a server with anything Notturno.Gear as your main."
             )
-        self.__server_hide = hide_server_version
         self.ssl = ssl
-        anyio.run(
-            partial(
-                self.http.serve,
-                host=host,
-                port=port,
-                server_hide=hide_server_version,
-                use_ssl=ssl,
-                certfile=certfile,
-                keyfile=keyfile,
-            ),
-            backend=self.async_backend,
-        )
+
+        loop = asyncio.get_event_loop()
+        try:
+            loop.run_until_complete(self.http.serve(
+                    host=host,
+                    port=port,
+                    server_hide=hide_server_version,
+                    use_ssl=ssl,
+                    certfile=certfile,
+                    keyfile=keyfile,
+            ))
+        except KeyboardInterrupt:
+            loop.run_until_complete(self.http.graceful_exit())
+        except SystemExit:
+            loop.run_until_complete(self.http.graceful_exit())
 
     def get(self, route: str):
         return self.route(route, method=["GET"])
@@ -443,4 +329,5 @@ class Notturno:
             func._router_method = "HTTPSTAT"
             self._internal_router.add_route("HTTPSTAT", code, func)
             return func
+
         return decorator

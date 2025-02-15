@@ -1,12 +1,25 @@
 import asyncio
 import ssl
 import traceback
+from functools import partial
+from http.client import responses
+
+from yarl import URL
+
+from ...lib import __version__
+from ...models.request import Request
+from ...models.response import Response
+from ...models.websocket import WebSocket
+from ...utils import jsonenc
+
 
 class NoctServ:
     def __init__(self, handler):
         self.handler = handler
         self.server_hide = None
         self.connections = {}
+        self.__gen = self.handler.lifespan(self.handler) if self.handler.lifespan else None
+        self.__current = None
 
     def parse_http_message(self, http_message):
         if not http_message.strip():
@@ -39,6 +52,169 @@ class NoctServ:
 
         return method, path, headers, body, http_version
 
+    async def __handle_http(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        method,
+        path,
+        headers,
+        body,
+        http_version,
+    ):
+        route, params = await self.handler.resolve(method.upper(), path)
+        if not route:
+            msg = "Not Found"
+            response = (
+                f"HTTP/1.1 404 NotFound\r\n"
+                "Content-Type: text/plain\r\n"
+                f"Content-Length: {len(msg)}\r\n"
+                "\r\n"
+                f"{msg}"
+            )
+            return response
+        url = URL(f"{'https' if self.ssl else 'http'}://{headers['Host']}/{path}")
+
+        if self.handler.middleware:
+            if self.handler.middleware != []:
+                arg_name = await self.handler._route(func=route, is_type=Request)
+                req = Request(
+                    method=method.upper(),
+                    url=url,
+                    headers=headers,
+                    query={key: url.query.getlist(key) for key in url.query.keys()},
+                    body=body,
+                )
+                route = partial(route, **params)
+
+                async def call_next(request):
+                    if asyncio.iscoroutinefunction(route):
+                        if arg_name:
+                            return await self.handler._convert_response(await route(**{arg_name: request}))
+                        else:
+                            return await self.handler._convert_response(await route())
+                    else:
+                        if arg_name:
+                            return await self.handler._convert_response(route(**{arg_name: request}))
+                        else:
+                            return await self.handler._convert_response(route())
+                for middleware in reversed(self.handler.middlewares):
+                    call_next = partial(middleware, call_next=call_next)
+                resp = await call_next(req)
+        else:
+            arg_name = await self.handler._route(func=route, is_type=Request)
+            if arg_name:
+                req = Request(
+                    method=method.upper(),
+                    url=url,
+                    headers=headers,
+                    query={key: url.query.getlist(key) for key in url.query.keys()},
+                    body=body,
+                )
+                params[arg_name] = req
+            if asyncio.iscoroutinefunction(route):
+                resp = await route(**params)
+            else:
+                resp = route(**params)
+
+        if isinstance(resp, Response):
+            content_type = None
+            if isinstance(resp.body, dict):
+                resp.body = jsonenc.dumps(resp)
+                content_type = "application/json"
+            elif isinstance(resp.body, list):
+                content_type = "application/json"
+            elif isinstance(resp.body, str):
+                content_type = "text/plain"
+            elif isinstance(resp.body, bytes):
+                content_type = "application/octet-stream"
+            elif isinstance(resp.body, int) or isinstance(resp.body, float):
+                content_type = "text/plain"
+            else:
+                content_type = "application/octet-stream"
+            resp_desc = responses.get(resp.status_code)
+            if not resp.headers.get("Content-Length"):
+                resp.headers["Content-Length"] = len(resp.body)
+            if not resp.headers.get("Content-Type"):
+                if resp.content_type:
+                    resp.headers["Content-Type"] = resp.content_type
+                elif content_type:
+                    resp.headers["Content-Type"] = content_type
+            if not self.server_hide:
+                resp.headers["Server"] = f"NoctServ/{__version__}"
+            else:
+                resp.headers["Server"] = "NoctServ"
+            headers = [f"{key}: {value}" for key, value in resp.headers.items()]
+            response = (
+                f"HTTP/1.1 {resp.status_code} {resp_desc if resp_desc else 'UNKNOWN'}\r\n"
+                f"{'\r\n'.join(headers)}\r\n"
+                "\r\n"
+                f"{resp.body}"
+            )
+        elif isinstance(resp, dict):
+            dumped = jsonenc.dumps(resp)
+            response = (
+                "HTTP/1.1 200 OK\r\n"
+                f"Content-Length: {len(dumped)}\r\n"
+                "Content-Type: application/json\r\n"
+                "\r\n"
+                f"{dumped}"
+            )
+        writer.write(response.encode("utf-8"))
+        await writer.drain()
+        writer.close()
+
+    async def _native_ws_handle(
+        self,
+        writer: asyncio.StreamWriter,
+        reader: asyncio.StreamReader,
+        path,
+        headers,
+        http_version,
+    ):
+        if "Sec-WebSocket-Key" not in headers:
+            return "HTTP/1.1 400 Bad Request\r\nServer: NoctServ\r\n\r\nBad Request"
+        route, params = await self.handler._resolve_internal("WS", path)
+        if not route:
+            msg = "Not Found"
+            response = (
+                f"HTTP/1.1 404 NotFound\r\n"
+                "Content-Type: text/plain\r\n"
+                f"Content-Length: {len(msg)}\r\n"
+                "\r\n"
+                f"{msg}"
+            )
+            writer.write(response.encode("utf-8"))
+            await writer.drain()
+            writer.close()
+            return
+        # raise NotImplementedError("Websocket Native Support is Non-Ready :(")
+        ws = WebSocket(path, headers, http_version)
+        ws._is_native = True
+        ws._webkey = headers.get("Sec-WebSocket-Key")
+        ws._reader = reader
+        ws._writer = writer
+        arg_name = await self.handler._route(func=route, is_type=WebSocket)
+        params[arg_name] = ws
+        if asyncio.iscoroutinefunction(route):
+            await route(**params)
+        else:
+            raise TypeError("Websocket is Only to use in coroutine function.")
+
+    async def _lifespan(self, shutdown: bool=False):
+        if self.__gen:
+            self.__gen = self.handler.lifespan(self.handler)
+            if shutdown:
+                try:
+                    await anext(self.__gen)
+                except StopAsyncIteration:
+                    pass
+            else:
+                try:
+                    await anext(self.__gen)
+                except StopAsyncIteration:
+                    pass
+                
     async def __handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ):
@@ -49,15 +225,13 @@ class NoctServ:
             method, path, headers, body, http_version = self.parse_http_message(reqline)
             if not headers.get("Upgrade") == "websocket":
                 conn_type = "http"
-                response = await self.handler._native_http_handle(
-                    method, path, headers, body, http_version
+                await self.__handle_http(
+                    reader, writer, method, path, headers, body, http_version
                 )
-                writer.write(response.encode("utf-8"))
-                await writer.drain()
             else:
                 conn_type = "websocket"
-                await self.handler._native_ws_handle(
-                    writer, reader, path, headers, body, http_version
+                await self._native_ws_handle(
+                    writer, reader, path, headers, http_version
                 )
         except (ssl.SSLError, Exception) as e:
             if isinstance(e, ssl.SSLError):
@@ -65,14 +239,14 @@ class NoctServ:
                     print("SSL error: application data after close notify")
                 elif e.reason == "UNEXPECTED_EOF_WHILE_READING":
                     print("SSL error: unexpected EOF while reading")
-            elif not isinstance(e, ssl.SSLError) and isinstance(
-                e, Exception
-            ):
+            elif not isinstance(e, ssl.SSLError) and isinstance(e, Exception):
                 print(traceback.format_exc())
                 if conn_type == "http":
                     await self.send_error_response(writer, 500, "Internal Server Error")
 
-    async def send_error_response(self, writer: asyncio.StreamWriter, status_code, message):
+    async def send_error_response(
+        self, writer: asyncio.StreamWriter, status_code, message
+    ):
         response = (
             f"HTTP/1.1 {status_code} {message}\r\n"
             "Content-Type: text/plain\r\n"
@@ -83,6 +257,18 @@ class NoctServ:
         writer.write(response.encode("utf-8"))
         await writer.drain()
 
+    async def graceful_exit(self):
+        await self.lifespan_handler()
+        self.listener.close()
+        await self.listener.wait_closed()
+
+    async def lifespan_handler(self):
+        if self.handler.lifespan:
+            try:
+                self.__current = await anext(self.__gen)
+            except StopAsyncIteration:
+                pass
+
     async def serve(
         self,
         host: str = "127.0.0.1",
@@ -92,17 +278,21 @@ class NoctServ:
         certfile: str = "cert.pem",
         keyfile: str = "key.pem",
     ):
-        self.server_hide = server_hide
-        self.ssl = use_ssl
-        if use_ssl:
-            ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ctx.load_cert_chain(certfile, keyfile)
-            ctx.set_alpn_protocols(['http/1.1'])
-            listener = await asyncio.start_server(self.__handle, host, port, ssl=ctx)
-            url = f"https://{host}:{port}"
-        else:
-            listener = await asyncio.start_server(self.__handle, host, port)
-            url = f"http://{host}:{port}"
-        print(f"Server is running on {url}")
-        async with listener:
-            await listener.serve_forever()
+            
+            self.server_hide = server_hide
+            self.ssl = use_ssl
+            self._running = True
+            await self.lifespan_handler()
+            if use_ssl:
+                ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+                ctx.load_cert_chain(certfile, keyfile)
+                ctx.set_alpn_protocols(["http/1.1"])
+                self.listener = await asyncio.start_server(self.__handle, host, port, ssl=ctx)
+                url = f"https://{host}:{port}"
+            else:
+                self.listener = await asyncio.start_server(self.__handle, host, port)
+                url = f"http://{host}:{port}"
+            print(f"Server is running on {url}")
+            async with self.listener:
+                await self.listener.serve_forever()
+            
