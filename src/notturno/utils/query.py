@@ -7,5 +7,7 @@ except ModuleNotFoundError:
 
 def parse_qs(qs: str) -> dict[str, str]:
     if parse_query_string:
-        return dict(parse_query_string(qs, "&"))
-    return dict(parse_qsl(qs))
+        query = dict(parse_query_string(qs, "&"))
+    else:
+        query = dict(parse_qsl(qs))
+    return query
