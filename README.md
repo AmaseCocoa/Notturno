@@ -1,8 +1,5 @@
 # Notturno
-ultra-fast HTTP/ASGI Web Framework.
-
-Supports asyncio/trio (Powered by AnyIO).
-
+Focus on performance and ease of use HTTP/ASGI Web Framework.
 ## Install
 Notturno is available on PyPI.
 ```
@@ -31,7 +28,7 @@ pip install notturno[template]
   - [ ] HTTP/2
   - [ ] HTTP/3 (QUIC)
   - [x] TLS Support
-  - [ ] Websocket Support
+  - [x] Websocket Support
 ### About NoctServ
 TLS-Ready HTTP server used by Notturno in standalone mode, allowing easy use of HTTP/1.1 without awareness.
 ### About RegExpRouter
