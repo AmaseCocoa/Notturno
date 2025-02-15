@@ -4,13 +4,16 @@ import traceback
 from functools import partial
 from http.client import responses
 
+from colorama import Fore, Style
 from yarl import URL
 
 from ...lib import __version__
+from ...logger import logger
 from ...models.request import Request
 from ...models.response import Response
 from ...models.websocket import WebSocket
 from ...utils import jsonenc
+from ...utils.log import stat_color
 
 
 class NoctServ:
@@ -18,7 +21,9 @@ class NoctServ:
         self.handler = handler
         self.server_hide = None
         self.connections = {}
-        self.__gen = self.handler.lifespan(self.handler) if self.handler.lifespan else None
+        self.__gen = (
+            self.handler.lifespan(self.handler) if self.handler.lifespan else None
+        )
         self.__current = None
 
     def parse_http_message(self, http_message):
@@ -63,6 +68,7 @@ class NoctServ:
         http_version,
     ):
         route, params = await self.handler.resolve(method.upper(), path)
+        client_ip, client_port = writer.get_extra_info("peername")
         if not route:
             msg = "Not Found"
             response = (
@@ -71,6 +77,9 @@ class NoctServ:
                 f"Content-Length: {len(msg)}\r\n"
                 "\r\n"
                 f"{msg}"
+            )
+            logger.info(
+                f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}{method.upper()} {path} HTTP/1.1{Style.RESET_ALL}" {stat_color}404 {responses.get("404")}{Fore.RESET}'
             )
             return response
         url = URL(f"{'https' if self.ssl else 'http'}://{headers['Host']}/{path}")
@@ -90,14 +99,19 @@ class NoctServ:
                 async def call_next(request):
                     if asyncio.iscoroutinefunction(route):
                         if arg_name:
-                            return await self.handler._convert_response(await route(**{arg_name: request}))
+                            return await self.handler._convert_response(
+                                await route(**{arg_name: request})
+                            )
                         else:
                             return await self.handler._convert_response(await route())
                     else:
                         if arg_name:
-                            return await self.handler._convert_response(route(**{arg_name: request}))
+                            return await self.handler._convert_response(
+                                route(**{arg_name: request})
+                            )
                         else:
                             return await self.handler._convert_response(route())
+
                 for middleware in reversed(self.handler.middlewares):
                     call_next = partial(middleware, call_next=call_next)
                 resp = await call_next(req)
@@ -151,6 +165,7 @@ class NoctServ:
                 "\r\n"
                 f"{resp.body}"
             )
+            status_code = resp.status_code
         elif isinstance(resp, dict):
             dumped = jsonenc.dumps(resp)
             response = (
@@ -160,11 +175,15 @@ class NoctServ:
                 "\r\n"
                 f"{dumped}"
             )
+            status_code = 200
+        logger.info(
+            f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}{method.upper()} {path} HTTP/1.1{Style.RESET_ALL}" {stat_color(status_code)}{status_code} {responses.get(status_code)}{Fore.RESET}'
+        )
         writer.write(response.encode("utf-8"))
         await writer.drain()
         writer.close()
 
-    async def _native_ws_handle(
+    async def __native_ws(
         self,
         writer: asyncio.StreamWriter,
         reader: asyncio.StreamReader,
@@ -172,7 +191,11 @@ class NoctServ:
         headers,
         http_version,
     ):
+        client_ip, client_port = writer.get_extra_info("peername")
         if "Sec-WebSocket-Key" not in headers:
+            logger.error(
+                f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}Websocket {path} HTTP/1.1{Style.RESET_ALL}" {stat_color}400 {responses.get(400)}{Fore.RESET}'
+            )
             return "HTTP/1.1 400 Bad Request\r\nServer: NoctServ\r\n\r\nBad Request"
         route, params = await self.handler._resolve_internal("WS", path)
         if not route:
@@ -187,6 +210,9 @@ class NoctServ:
             writer.write(response.encode("utf-8"))
             await writer.drain()
             writer.close()
+            logger.error(
+                f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}Websocket {path} HTTP/1.1{Style.RESET_ALL}" {stat_color}404 {responses.get(404)}{Fore.RESET}'
+            )
             return
         # raise NotImplementedError("Websocket Native Support is Non-Ready :(")
         ws = WebSocket(path, headers, http_version)
@@ -194,6 +220,7 @@ class NoctServ:
         ws._webkey = headers.get("Sec-WebSocket-Key")
         ws._reader = reader
         ws._writer = writer
+        ws._logger = logger
         arg_name = await self.handler._route(func=route, is_type=WebSocket)
         params[arg_name] = ws
         if asyncio.iscoroutinefunction(route):
@@ -201,7 +228,7 @@ class NoctServ:
         else:
             raise TypeError("Websocket is Only to use in coroutine function.")
 
-    async def _lifespan(self, shutdown: bool=False):
+    async def _lifespan(self, shutdown: bool = False):
         if self.__gen:
             self.__gen = self.handler.lifespan(self.handler)
             if shutdown:
@@ -214,7 +241,7 @@ class NoctServ:
                     await anext(self.__gen)
                 except StopAsyncIteration:
                     pass
-                
+
     async def __handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ):
@@ -230,29 +257,38 @@ class NoctServ:
                 )
             else:
                 conn_type = "websocket"
-                await self._native_ws_handle(
-                    writer, reader, path, headers, http_version
-                )
+                await self.__native_ws(writer, reader, path, headers, http_version)
         except (ssl.SSLError, Exception) as e:
             if isinstance(e, ssl.SSLError):
                 if e.reason == "APPLICATION_DATA_AFTER_CLOSE_NOTIFY":
-                    print("SSL error: application data after close notify")
+                    logger.error(
+                        "An error occurred while running the application:\nSSL error: application data after close notify"
+                    )
                 elif e.reason == "UNEXPECTED_EOF_WHILE_READING":
-                    print("SSL error: unexpected EOF while reading")
+                    logger.error(
+                        "An error occurred while running the application:\nSSL error: unexpected EOF while reading"
+                    )
             elif not isinstance(e, ssl.SSLError) and isinstance(e, Exception):
-                print(traceback.format_exc())
+                logger.error(
+                    "An error occurred while running the application:\n"
+                    + traceback.format_exc()
+                )
                 if conn_type == "http":
-                    await self.send_error_response(writer, 500, "Internal Server Error")
+                    await self.send_error_response(writer, 500, method, path)
 
     async def send_error_response(
-        self, writer: asyncio.StreamWriter, status_code, message
+        self, writer: asyncio.StreamWriter, status_code, method, path
     ):
+        client_ip, client_port = writer.get_extra_info("peername")
         response = (
-            f"HTTP/1.1 {status_code} {message}\r\n"
+            f"HTTP/1.1 {status_code} {responses.get(status_code)}\r\n"
             "Content-Type: text/plain\r\n"
-            f"Content-Length: {len(message)}\r\n"
+            f"Content-Length: {len(responses.get(status_code))}\r\n"
             "\r\n"
-            f"{message}"
+            f"{responses.get(status_code)}"
+        )
+        logger.error(
+            f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}{method.upper()} {path} HTTP/1.1{Style.RESET_ALL}" {stat_color}{status_code} {responses.get(status_code)}{Fore.RESET}'
         )
         writer.write(response.encode("utf-8"))
         await writer.drain()
@@ -278,21 +314,21 @@ class NoctServ:
         certfile: str = "cert.pem",
         keyfile: str = "key.pem",
     ):
-            
-            self.server_hide = server_hide
-            self.ssl = use_ssl
-            self._running = True
-            await self.lifespan_handler()
-            if use_ssl:
-                ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-                ctx.load_cert_chain(certfile, keyfile)
-                ctx.set_alpn_protocols(["http/1.1"])
-                self.listener = await asyncio.start_server(self.__handle, host, port, ssl=ctx)
-                url = f"https://{host}:{port}"
-            else:
-                self.listener = await asyncio.start_server(self.__handle, host, port)
-                url = f"http://{host}:{port}"
-            print(f"Server is running on {url}")
-            async with self.listener:
-                await self.listener.serve_forever()
-            
+        self.server_hide = server_hide
+        self.ssl = use_ssl
+        self._running = True
+        await self.lifespan_handler()
+        if use_ssl:
+            ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ctx.load_cert_chain(certfile, keyfile)
+            ctx.set_alpn_protocols(["http/1.1"])
+            self.listener = await asyncio.start_server(
+                self.__handle, host, port, ssl=ctx
+            )
+            url = f"https://{host}:{port}"
+        else:
+            self.listener = await asyncio.start_server(self.__handle, host, port)
+            url = f"http://{host}:{port}"
+        print(f"Server is running on {url}")
+        async with self.listener:
+            await self.listener.serve_forever()

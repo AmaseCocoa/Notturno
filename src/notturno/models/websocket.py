@@ -2,8 +2,12 @@ import asyncio
 import base64
 import hashlib
 import struct
+from http.client import responses
+
+from colorama import Fore, Style
 
 from ..exceptions import WebsocketClosed
+from ..utils.log import stat_color
 
 
 class WebSocket:
@@ -19,9 +23,11 @@ class WebSocket:
 
         self._send = None
         self._receive = None
+        self._logger = None
 
     async def accept(self):
         if self._is_native:
+            client_ip, client_port = self._writer.get_extra_info("peername")
             webaccept = base64.b64encode(
                 hashlib.sha1(
                     (self._webkey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
@@ -34,6 +40,10 @@ class WebSocket:
                 b"Sec-WebSocket-Accept: " + webaccept + b"\r\n",
                 b"Sec-WebSocket-Version: 13\r\n\r\n",
             ]
+            if self._logger:
+                self._logger.info(
+                    f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}Websocket (Accepted) {self.path} HTTP/1.1{Style.RESET_ALL}" {stat_color(101)}101 {responses.get(101)}{Fore.RESET}'
+                )
             self._writer.write(b"".join(response_headers))
             await self._writer.drain()
         else:
