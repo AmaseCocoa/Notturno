@@ -12,7 +12,6 @@ from .core.http.serv import NoctServ
 from .core.router.regexp import RegExpRouter
 from .models.request import Request, from_asgi
 from .models.response import Response
-from .models.websocket import WebSocket
 from .types import LOOP
 from .utils import jsonenc
 
@@ -269,7 +268,7 @@ class Notturno:
                     uvicorn.config.LOOP_SETUPS["winloop"] = (
                         "notturno.loops.winloop:winloop_setup"
                     )
-            uvicorn.run(host=host, port=port, loop=loop)
+            uvicorn.run(self, host=host, port=port, loop=loop)
         else:
             raise ModuleNotFoundError(
                 "uvicorn not found, can be installed with pip install uvicorn."
@@ -292,14 +291,16 @@ class Notturno:
 
         loop = asyncio.get_event_loop()
         try:
-            loop.run_until_complete(self.http.serve(
+            loop.run_until_complete(
+                self.http.serve(
                     host=host,
                     port=port,
                     server_hide=hide_server_version,
                     use_ssl=ssl,
                     certfile=certfile,
                     keyfile=keyfile,
-            ))
+                )
+            )
         except KeyboardInterrupt:
             loop.run_until_complete(self.http.graceful_exit())
         except SystemExit:
