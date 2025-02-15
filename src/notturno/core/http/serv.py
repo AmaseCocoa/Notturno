@@ -79,7 +79,7 @@ class NoctServ:
                 f"{msg}"
             )
             logger.info(
-                f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}{method.upper()} {path} HTTP/1.1{Style.RESET_ALL}" {stat_color}404 {responses.get("404")}{Fore.RESET}'
+                f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}{method.upper()} {path} HTTP/1.1{Style.RESET_ALL}" {stat_color(404)}404 {responses.get(404)}{Fore.RESET}'
             )
             return response
         url = URL(f"{'https' if self.ssl else 'http'}://{headers['Host']}/{path}")
@@ -134,7 +134,7 @@ class NoctServ:
         if isinstance(resp, Response):
             content_type = None
             if isinstance(resp.body, dict):
-                resp.body = jsonenc.dumps(resp)
+                resp.body = jsonenc.dumps(resp.body).decode("utf-8")
                 content_type = "application/json"
             elif isinstance(resp.body, list):
                 content_type = "application/json"
@@ -158,6 +158,7 @@ class NoctServ:
                 resp.headers["Server"] = f"NoctServ/{__version__}"
             else:
                 resp.headers["Server"] = "NoctServ"
+            resp.headers["Connection"] = "close"
             headers = [f"{key}: {value}" for key, value in resp.headers.items()]
             response = (
                 f"HTTP/1.1 {resp.status_code} {resp_desc if resp_desc else 'UNKNOWN'}\r\n"
@@ -182,6 +183,7 @@ class NoctServ:
         writer.write(response.encode("utf-8"))
         await writer.drain()
         writer.close()
+        await writer.wait_closed()
 
     async def __native_ws(
         self,
@@ -194,7 +196,7 @@ class NoctServ:
         client_ip, client_port = writer.get_extra_info("peername")
         if "Sec-WebSocket-Key" not in headers:
             logger.error(
-                f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}Websocket {path} HTTP/1.1{Style.RESET_ALL}" {stat_color}400 {responses.get(400)}{Fore.RESET}'
+                f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}Websocket {path} HTTP/1.1{Style.RESET_ALL}" {stat_color(400)}400 {responses.get(400)}{Fore.RESET}'
             )
             return "HTTP/1.1 400 Bad Request\r\nServer: NoctServ\r\n\r\nBad Request"
         route, params = await self.handler._resolve_internal("WS", path)
@@ -211,7 +213,7 @@ class NoctServ:
             await writer.drain()
             writer.close()
             logger.error(
-                f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}Websocket {path} HTTP/1.1{Style.RESET_ALL}" {stat_color}404 {responses.get(404)}{Fore.RESET}'
+                f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}Websocket {path} HTTP/1.1{Style.RESET_ALL}" {stat_color(404)}404 {responses.get(404)}{Fore.RESET}'
             )
             return
         # raise NotImplementedError("Websocket Native Support is Non-Ready :(")
@@ -288,7 +290,7 @@ class NoctServ:
             f"{responses.get(status_code)}"
         )
         logger.error(
-            f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}{method.upper()} {path} HTTP/1.1{Style.RESET_ALL}" {stat_color}{status_code} {responses.get(status_code)}{Fore.RESET}'
+            f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}{method.upper()} {path} HTTP/1.1{Style.RESET_ALL}" {stat_color(status_code)}{status_code} {responses.get(status_code)}{Fore.RESET}'
         )
         writer.write(response.encode("utf-8"))
         await writer.drain()
