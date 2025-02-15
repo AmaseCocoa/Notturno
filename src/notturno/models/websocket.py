@@ -77,6 +77,8 @@ class WebSocket:
 
     def __create_websocket_frame(self, message):
         byte_message = message.encode("utf-8") if isinstance(message, str) else message
+        if not byte_message:
+            raise WebsocketClosed
         length = len(byte_message)
         if length <= 125:
             frame = bytearray([0b10000001]) + bytearray([length]) + byte_message
@@ -92,7 +94,6 @@ class WebSocket:
         return frame
 
     async def send(self, message: str | bytes):
-        print("test")
         if self._is_native:
             self._writer.write(self.__create_websocket_frame(message))
             await self._writer.drain()
@@ -108,7 +109,7 @@ class WebSocket:
 
     async def close(self):
         if self._is_native:
-            await self._writer.close()
+            self._writer.close()
         else:
             await self._send(
                 {
