@@ -1,10 +1,7 @@
+import asyncio
 import base64
 import hashlib
 import struct
-
-from anyio.streams.tls import TLSStream
-from anyio._backends._asyncio import SocketStream as AIOSocketStream
-from anyio._backends._trio import SocketStream as TrioSocketStream
 
 from ..exceptions import WebsocketClosed
 
@@ -12,15 +9,16 @@ from ..exceptions import WebsocketClosed
 class WebSocket:
     def __init__(self, path: str, headers: str, http_version: str):
         self._webkey = None
-        self._client: TLSStream | AIOSocketStream | TrioSocketStream = None
+        self._reader: asyncio.StreamReader = None
+        self._writer: asyncio.StreamWriter = None
         self._is_native = True
 
         self.path = path
         self.headers = headers
         self.http_version = http_version
 
-        self.send = None
-        self.receive = None
+        self._send = None
+        self._receive = None
 
     async def accept(self):
         if self._is_native:
@@ -28,74 +26,76 @@ class WebSocket:
                 hashlib.sha1(
                     (self._webkey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
                 ).digest()
-            ).decode()
-            headers = [f"{key}: {value}" for key, value in {
-                "Upgrade": "websocket",
-                "Connection": "Upgrade",
-                "Sec-WebSocket-Accept": f"{webaccept}",
-                "Sec-WebSocket-Version": "13"
-            }.items()]
-            response = (
-                "HTTP/1.1 101 Switching Protocols\r\n"
-                f"{'\r\n'.join(headers)}\r\n"
             )
-            await self._client.send(response.encode())
+            response_headers = [
+                b"HTTP/1.1 101 Switching Protocols\r\n",
+                b"Upgrade: websocket\r\n",
+                b"Connection: Upgrade\r\n",
+                b"Sec-WebSocket-Accept: " + webaccept + b"\r\n",
+                b"Sec-WebSocket-Version: 13\r\n\r\n",
+            ]
+            self._writer.write(b"".join(response_headers))
+            await self._writer.drain()
         else:
-            await self.send({
-                "type": "websocket.accept",
-            })
+            await self._send(
+                {
+                    "type": "websocket.accept",
+                }
+            )
 
     async def recv(self):
         if self._is_native:
-            data = await self._client.receive(2)
+            data = await self._reader.read(2)
             if len(data) < 2:
                 raise WebsocketClosed
-            
+
             length = data[1] & 127
             if length == 126:
-                length_data = await self._client.receive(2)
+                length_data = await self._reader.read(2)
                 length = struct.unpack(">H", length_data)[0]
             elif length == 127:
-                length_data = await self._client.receive(8)
+                length_data = await self._reader.read(8)
                 length = struct.unpack(">Q", length_data)[0]
 
-            mask = await self._client.receive(4)
+            mask = await self._reader.read(4)
 
-            message = await self._client.receive(length)
+            message = await self._reader.read(length)
 
-            decoded_message = bytearray(
-                b ^ mask[i % 4] for i, b in enumerate(message)
-            )
+            decoded_message = bytearray(b ^ mask[i % 4] for i, b in enumerate(message))
 
             try:
                 return decoded_message.decode()
             except UnicodeDecodeError:
                 return None
         else:
-            message = await self.receive()
+            message = await self._receive()
             if message["type"] == "websocket.disconnect":
                 raise WebsocketClosed
             elif message["type"] == "websocket.receive":
                 return message["text"]
             raise Exception("Invalid message type")
-        
+
+    def __create_websocket_frame(self, message):
+        byte_message = message.encode("utf-8") if isinstance(message, str) else message
+        length = len(byte_message)
+        if length <= 125:
+            frame = bytearray([0b10000001]) + bytearray([length]) + byte_message
+        elif length >= 126 and length <= 65535:
+            frame = (
+                bytearray([0b10000001])
+                + bytearray([126])
+                + bytearray(length.to_bytes(2, "big"))
+                + byte_message
+            )
+        else:
+            raise Exception("Message too long")
+        return frame
+
     async def send(self, message: str | bytes):
+        print("test")
         if self._is_native:
-            if isinstance(message, str):
-                message = message.encode()
-            length = len(message)
-            if length <= 125:
-                frame = struct.pack("B", 129) + struct.pack("B", length) + message
-            elif length >= 126 and length <= 65535:
-                frame = (
-                    struct.pack("B", 129)
-                    + struct.pack("B", 126)
-                    + struct.pack(">H", length)
-                    + message
-                )
-            else:
-                raise Exception("Message too long")
-            await self._client.send(frame)
+            self._writer.write(self.__create_websocket_frame(message))
+            await self._writer.drain()
         else:
             tmpl = {
                 "type": "websocket.send",
@@ -104,12 +104,14 @@ class WebSocket:
                 tmpl["bytes"] = message
             else:
                 tmpl["text"] = message
-            await self.send(tmpl)
-        
+            await self._send(tmpl)
+
     async def close(self):
         if self._is_native:
-            await self.client.aclose()
+            await self._writer.close()
         else:
-            await self.send({
-                "type": "websocket.close",
-            })
+            await self._send(
+                {
+                    "type": "websocket.close",
+                }
+            )

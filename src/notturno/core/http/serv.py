@@ -1,3 +1,4 @@
+import asyncio
 import ssl
 import traceback
 
@@ -5,6 +6,7 @@ import anyio
 from anyio.streams.tls import TLSListener, TLSStream
 from anyio._backends._asyncio import SocketStream as AIOSocketStream
 from anyio._backends._trio import SocketStream as TrioSocketStream
+
 
 class NoctServ:
     def __init__(self, handler):
@@ -44,31 +46,25 @@ class NoctServ:
         return method, path, headers, body, http_version
 
     async def __handle(
-        self,
-        client: TLSStream
-        | AIOSocketStream
-        | TrioSocketStream,
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ):
         conn_type = None
         try:
-            
-            async with client:
-                data = await client.receive(1024)
-                reqline = data.decode()
-                method, path, headers, body, http_version = self.parse_http_message(
-                    reqline
+            data = await reader.read(1024)
+            reqline = data.decode()
+            method, path, headers, body, http_version = self.parse_http_message(reqline)
+            if not headers.get("Upgrade") == "websocket":
+                conn_type = "http"
+                response = await self.handler._native_http_handle(
+                    method, path, headers, body, http_version
                 )
-                if not headers.get("Upgrade") == "websocket":
-                    conn_type = "http"
-                    response = await self.handler._native_http_handle(
-                        method, path, headers, body, http_version
-                    )
-                    await client.send(response.encode())
-                else:
-                    conn_type = "websocket"
-                    await self.handler._native_ws_handle(
-                        client, path, headers, body, http_version
-                    )
+                writer.write(response.encode("utf-8"))
+                await writer.drain()
+            else:
+                conn_type = "websocket"
+                await self.handler._native_ws_handle(
+                    writer, reader, path, headers, body, http_version
+                )
         except (ssl.SSLError, anyio.BrokenResourceError, Exception) as e:
             if isinstance(e, ssl.SSLError):
                 if e.reason == "APPLICATION_DATA_AFTER_CLOSE_NOTIFY":
@@ -80,9 +76,9 @@ class NoctServ:
             ):
                 print(traceback.format_exc())
                 if conn_type == "http":
-                    await self.send_error_response(client, 500, "Internal Server Error")
+                    await self.send_error_response(writer, 500, "Internal Server Error")
 
-    async def send_error_response(self, client, status_code, message):
+    async def send_error_response(self, writer: asyncio.StreamWriter, status_code, message):
         response = (
             f"HTTP/1.1 {status_code} {message}\r\n"
             "Content-Type: text/plain\r\n"
@@ -90,7 +86,8 @@ class NoctServ:
             "\r\n"
             f"{message}"
         )
-        await client.send(response.encode())
+        writer.write(response.encode("utf-8"))
+        await writer.drain()
 
     async def serve(
         self,
@@ -102,14 +99,16 @@ class NoctServ:
         keyfile: str = "key.pem",
     ):
         self.server_hide = server_hide
-        listener = await anyio.create_tcp_listener(local_host=host, local_port=port)
+        listener = await asyncio.start_server(self.__handle, host, port)
         self.ssl = use_ssl
-        if use_ssl:
-            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-            context.set_alpn_protocols(["http/1.1", "h2", "h3"])
-            listener = TLSListener(listener, context, standard_compatible=False)
-            print(f"Server is running on https://{host}:{port}")
-        else:
-            print(f"Server is running on http://{host}:{port}")
-        await listener.serve(self.__handle)
+        # if use_ssl:
+        #    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        #    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+        #    context.set_alpn_protocols(["http/1.1", "h2", "h3"])
+        #    listener = TLSListener(listener, context, standard_compatible=False)
+        #    print(f"Server is running on https://{host}:{port}")
+        # else:
+        print(f"Server is running on http://{host}:{port}")
+        # await listener.serve(self.__handle)
+        async with listener:
+            await listener.serve_forever()

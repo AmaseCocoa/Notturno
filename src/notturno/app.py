@@ -7,14 +7,18 @@ from typing import Any, Callable, Dict
 import anyio
 from yarl import URL
 
+try:
+    import uvicorn
+except ModuleNotFoundError:
+    uvicorn = None
+
 from .core.http.serv import NoctServ
 from .core.router.regexp import RegExpRouter
-from .models.request import Request
+from .models.request import Request, from_asgi
 from .models.response import Response
 from .models.websocket import WebSocket
 from .utils import jsonenc
-from .utils.query import parse_qs
-
+from .types import LOOP
 
 class Notturno:
     def __init__(self, async_backend: str = "asyncio", lifespan=None):
@@ -101,8 +105,6 @@ class Notturno:
                     await send({"type": "lifespan.shutdown.complete"})
                     return
 
-
-
     async def __asgi_http_handle(self, scope: Dict[str, Any], receive: Any, send: Any):
         route, params = await self.resolve(scope["method"], scope["path"])
         if not route:
@@ -121,29 +123,10 @@ class Notturno:
                 }
             )
             return
-        req = None
-        response_body = b""
-        while True:
-            message = await receive()
-            response_body += message.get("body", b"")
-            if not message.get("more_body", False):
-                break
-        response_body_string = response_body.decode("utf-8")
-        headers = {
-            key.decode("utf-8"): value.decode("utf-8")
-            for key, value in scope["headers"]
-        }
-
+        req = await from_asgi(scope, receive)
         arg_name = await self.__route(func=route, is_type=Request)
         if self.middleware:
             if self.middleware != []:
-                req = Request(
-                    method=scope["method"],
-                    url=f"{scope['scheme']}://{headers['host']}{scope['path']}",
-                    headers=headers,
-                    query=parse_qs(scope["query_string"]),
-                    body=response_body_string,
-                )
                 route = partial(route, **params)
                 async def call_next(request):
                     if arg_name:
@@ -155,14 +138,6 @@ class Notturno:
                 resp = await call_next(req)
         else:
             if arg_name:
-                if not req:
-                    req = Request(
-                        method=scope["method"],
-                        url=f"{scope['scheme']}://{headers['host']}{scope['path']}",
-                        headers=headers,
-                        query=parse_qs(scope["query_string"]),
-                        body=response_body_string,
-                    )
                 params[arg_name] = req
             if asyncio.iscoroutinefunction(route):
                 resp = await route(**params)
@@ -342,7 +317,7 @@ class Notturno:
             )
         return response
 
-    async def _native_ws_handle(self, client, path, headers, body, http_version):
+    async def _native_ws_handle(self, writer: asyncio.StreamWriter, reader: asyncio.StreamReader, path, headers, body, http_version):
         if "Sec-WebSocket-Key" not in headers:
             return "HTTP/1.1 400 Bad Request\r\nServer: NoctServe\r\n\r\nBad Request"
         route, params = await self.__resolve_internal("WS", path)
@@ -355,14 +330,16 @@ class Notturno:
                 "\r\n"
                 f"{msg}"
             )
-            await client.send(response.encode())
-            await client.aclose()
+            writer.write(response.encode("utf-8"))
+            await writer.drain()
+            await writer.close()
             return
-        raise NotImplementedError("Websocket Native Support is Non-Ready :(")
+        #raise NotImplementedError("Websocket Native Support is Non-Ready :(")
         ws = WebSocket(path, headers, http_version)
         ws._is_native = True
-        ws._webkey = "Sec-WebSocket-Key"
-        ws._client = client
+        ws._webkey = headers.get("Sec-WebSocket-Key")
+        ws._reader = reader
+        ws._writer = writer
         arg_name = await self.__route(func=route, is_type=WebSocket)
         params[arg_name] = ws
         if asyncio.iscoroutinefunction(route):
@@ -398,6 +375,21 @@ class Notturno:
         if not route:
             return (None, None)
         return (route.get(method)["func"], route.get(method)["params"])
+
+    def serve_asgi(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        loop: LOOP = "auto"
+    ) -> None: 
+        if uvicorn:
+            if loop == "winloop":
+                import platform
+                if platform.system() == "Windows":
+                    uvicorn.config.LOOP_SETUPS["winloop"] = "notturno.loops.winloop:winloop_setup"
+            uvicorn.run(host=host, port=port, loop=loop)
+        else:
+            raise ModuleNotFoundError("uvicorn not found, can be installed with pip install uvicorn.")
 
     def serve(
         self,
@@ -442,4 +434,13 @@ class Notturno:
             self._internal_router.add_route("WS", route_normalized, func)
             return func
 
+        return decorator
+
+    def status(self, code: int):
+        def decorator(func):
+            if isinstance(func, staticmethod):
+                func = func.__func__
+            func._router_method = "HTTPSTAT"
+            self._internal_router.add_route("HTTPSTAT", code, func)
+            return func
         return decorator
