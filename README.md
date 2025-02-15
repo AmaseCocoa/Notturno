@@ -31,5 +31,5 @@ pip install notturno[template]
   - [x] Websocket Support
 ### About NoctServ
 TLS-Ready HTTP server used by Notturno in standalone mode, allowing easy use of HTTP/1.1 without awareness.
-### About RegExpRouter
-Created with reference to the `RegExpRouter` of [Hono](https://hono.dev/), an ultra-fast web application framework for JavaScript
+### About PathRouter (formerly RegExpRouter)
+This router was created with reference to the `RegExpRouter` from [Hono](https://hono.dev/), an ultra-fast web application framework for JavaScript, which after being changed to `PathRouter` can match static paths without going through regular expressions.
