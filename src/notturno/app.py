@@ -9,7 +9,7 @@ except ModuleNotFoundError:
     uvicorn = None
 
 from .core.http.serv import NoctServ
-from .core.router.regexp import RegExpRouter
+from .core.router.regexp import PathRouter
 from .models.request import Request, from_asgi
 from .models.response import Response
 from .types import LOOP
@@ -18,9 +18,9 @@ from .utils import jsonenc
 
 class Notturno:
     def __init__(self, lifespan=None):
-        self._router = RegExpRouter()
+        self._router = PathRouter()
         self.dependencies = {}
-        self._internal_router = RegExpRouter()
+        self._internal_router = PathRouter()
         self.__is_main = self.__is_non_gear()
         self.lifespan = lifespan
         self.middlewares = []
@@ -144,7 +144,7 @@ class Notturno:
         resp = await self._convert_response(resp)
         content_type = None
         if isinstance(resp.body, dict):
-            resp.body = jsonenc.dumps(resp)
+            resp.body = jsonenc.dumps(resp.body)
             content_type = "application/json"
         elif isinstance(resp.body, list):
             resp.body = b"".join([s.encode("utf-8") for s in resp.body])
