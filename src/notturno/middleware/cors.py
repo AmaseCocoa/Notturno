@@ -15,17 +15,9 @@ class CORSMiddleware(BaseMiddleware):
 
     async def __call__(self, request: Request, call_next):
         response: Response = await call_next(request)
-        origin = request.headers.get("Origin")
-        if origin:
-            response.headers["Access-Control-Allow-Origin"] = ", ".join(
-                self.allow_origins
-            )
-            response.headers["Access-Control-Allow-Methods"] = ", ".join(
-                self.allow_methods
-            )
-            response.headers["Access-Control-Allow-Headers"] = ", ".join(
-                self.allow_headers
-            )
+        response.headers["Access-Control-Allow-Origin"] = ", ".join(self.allow_origins)
+        response.headers["Access-Control-Allow-Methods"] = ", ".join(self.allow_methods)
+        response.headers["Access-Control-Allow-Headers"] = ", ".join(self.allow_headers)
         if request.method == "OPTIONS":
             response.status_code = 204
             return response
