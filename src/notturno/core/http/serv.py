@@ -2,12 +2,6 @@ import asyncio
 import ssl
 import traceback
 
-import anyio
-from anyio.streams.tls import TLSListener, TLSStream
-from anyio._backends._asyncio import SocketStream as AIOSocketStream
-from anyio._backends._trio import SocketStream as TrioSocketStream
-
-
 class NoctServ:
     def __init__(self, handler):
         self.handler = handler
@@ -65,13 +59,13 @@ class NoctServ:
                 await self.handler._native_ws_handle(
                     writer, reader, path, headers, body, http_version
                 )
-        except (ssl.SSLError, anyio.BrokenResourceError, Exception) as e:
+        except (ssl.SSLError, Exception) as e:
             if isinstance(e, ssl.SSLError):
                 if e.reason == "APPLICATION_DATA_AFTER_CLOSE_NOTIFY":
                     print("SSL error: application data after close notify")
                 elif e.reason == "UNEXPECTED_EOF_WHILE_READING":
                     print("SSL error: unexpected EOF while reading")
-            elif not isinstance(e, anyio.BrokenResourceError) and isinstance(
+            elif not isinstance(e, ssl.SSLError) and isinstance(
                 e, Exception
             ):
                 print(traceback.format_exc())
@@ -99,16 +93,16 @@ class NoctServ:
         keyfile: str = "key.pem",
     ):
         self.server_hide = server_hide
-        listener = await asyncio.start_server(self.__handle, host, port)
         self.ssl = use_ssl
-        # if use_ssl:
-        #    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        #    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-        #    context.set_alpn_protocols(["http/1.1", "h2", "h3"])
-        #    listener = TLSListener(listener, context, standard_compatible=False)
-        #    print(f"Server is running on https://{host}:{port}")
-        # else:
-        print(f"Server is running on http://{host}:{port}")
-        # await listener.serve(self.__handle)
+        if use_ssl:
+            ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ctx.load_cert_chain(certfile, keyfile)
+            ctx.set_alpn_protocols(['http/1.1'])
+            listener = await asyncio.start_server(self.__handle, host, port, ssl=ctx)
+            url = f"https://{host}:{port}"
+        else:
+            listener = await asyncio.start_server(self.__handle, host, port)
+            url = f"http://{host}:{port}"
+        print(f"Server is running on {url}")
         async with listener:
             await listener.serve_forever()
