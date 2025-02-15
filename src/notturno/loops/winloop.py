@@ -1,7 +1,19 @@
 import asyncio
+import warnings
 
-import winloop
+try:
+    import winloop
+except ModuleNotFoundError:
+    winloop = None
+
+from uvicorn.loops.auto import auto_loop_setup
 
 
-def winloop_setup(use_subprocess: bool = False) -> None:
-    asyncio.set_event_loop_policy(winloop.EventLoopPolicy())
+
+if winloop:
+    def winloop_setup(use_subprocess: bool = False) -> None:
+        asyncio.set_event_loop_policy(winloop.EventLoopPolicy())
+else:
+    def winloop_setup(use_subprocess: bool = False) -> None:
+        warnings.warn("Winloop not found. Trying auto...", ImportWarning)
+        return auto_loop_setup(use_subprocess)
