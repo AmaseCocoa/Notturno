@@ -12,7 +12,7 @@ from ...logger import logger
 from ...models.request import Request
 from ...models.response import Response
 from ...models.websocket import WebSocket
-from ...utils import jsonenc
+from ...utils import http, jsonenc
 from ...utils.log import stat_color
 
 
@@ -85,36 +85,22 @@ class NoctServ:
         url = URL(f"{'https' if self.ssl else 'http'}://{headers['Host']}/{path}")
 
         if self.handler.middleware:
-            if self.handler.middleware != []:
-                arg_name = await self.handler._route(func=route, is_type=Request)
-                req = Request(
-                    method=method.upper(),
-                    url=url,
-                    headers=headers,
-                    query={key: url.query.getlist(key) for key in url.query.keys()},
-                    body=body,
-                )
-                route = partial(route, **params)
-
-                async def call_next(request):
-                    if asyncio.iscoroutinefunction(route):
-                        if arg_name:
-                            return await self.handler._convert_response(
-                                await route(**{arg_name: request})
-                            )
-                        else:
-                            return await self.handler._convert_response(await route())
-                    else:
-                        if arg_name:
-                            return await self.handler._convert_response(
-                                route(**{arg_name: request})
-                            )
-                        else:
-                            return await self.handler._convert_response(route())
-
-                for middleware in reversed(self.handler.middlewares):
-                    call_next = partial(middleware, call_next=call_next)
-                resp = await call_next(req)
+            arg_name = await self.handler._route(func=route, is_type=Request)
+            req = Request(
+                method=method.upper(),
+                url=url,
+                headers=headers,
+                query={key: url.query.getlist(key) for key in url.query.keys()},
+                body=body,
+            )
+            route = partial(route, **params)
+            resp = await http.wrap_middleware(
+                route,
+                req,
+                http.convert_body,
+                self.handler.middlewares,
+                arg_name,
+            )
         else:
             arg_name = await self.handler._route(func=route, is_type=Request)
             if arg_name:
@@ -132,33 +118,16 @@ class NoctServ:
                 resp = route(**params)
 
         if isinstance(resp, Response):
-            content_type = None
-            if isinstance(resp.body, dict):
-                resp.body = jsonenc.dumps(resp.body).decode("utf-8")
-                content_type = "application/json"
-            elif isinstance(resp.body, list):
-                content_type = "application/json"
-            elif isinstance(resp.body, str):
-                content_type = "text/plain"
-            elif isinstance(resp.body, bytes):
-                content_type = "application/octet-stream"
-            elif isinstance(resp.body, int) or isinstance(resp.body, float):
-                content_type = "text/plain"
-            else:
-                content_type = "application/octet-stream"
+            resp = http.convert_body(resp, without_convert=True)
             resp_desc = responses.get(resp.status_code)
             if not resp.headers.get("Content-Length"):
-                resp.headers["Content-Length"] = len(resp.body)
-            if not resp.headers.get("Content-Type"):
-                if resp.content_type:
-                    resp.headers["Content-Type"] = resp.content_type
-                elif content_type:
-                    resp.headers["Content-Type"] = content_type
+                resp.headers["Content-Length"] = len(resp.body if not isinstance(resp.body, bytes) else resp.body.decode("utf-8"))
             if not self.server_hide:
                 resp.headers["Server"] = f"NoctServ/{__version__}"
             else:
                 resp.headers["Server"] = "NoctServ"
             resp.headers["Connection"] = "close"
+
             headers = [f"{key}: {value}" for key, value in resp.headers.items()]
             response = (
                 f"HTTP/1.1 {resp.status_code} {resp_desc if resp_desc else 'UNKNOWN'}\r\n"
@@ -177,11 +146,11 @@ class NoctServ:
                 f"{dumped}"
             )
             status_code = 200
+        writer.write(response.encode("utf-8"))
+        await writer.drain()
         logger.info(
             f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}{method.upper()} {path} HTTP/1.1{Style.RESET_ALL}" {stat_color(status_code)}{status_code} {responses.get(status_code)}{Fore.RESET}'
         )
-        writer.write(response.encode("utf-8"))
-        await writer.drain()
         writer.close()
         await writer.wait_closed()
 
@@ -216,7 +185,6 @@ class NoctServ:
                 f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}Websocket {path} HTTP/1.1{Style.RESET_ALL}" {stat_color(404)}404 {responses.get(404)}{Fore.RESET}'
             )
             return
-        # raise NotImplementedError("Websocket Native Support is Non-Ready :(")
         ws = WebSocket(path, headers, http_version)
         ws._is_native = True
         ws._webkey = headers.get("Sec-WebSocket-Key")
@@ -289,11 +257,11 @@ class NoctServ:
             "\r\n"
             f"{responses.get(status_code)}"
         )
+        writer.write(response.encode("utf-8"))
+        await writer.drain()
         logger.error(
             f'{client_ip}:{client_port} - "{Style.BRIGHT}{Fore.WHITE}{method.upper()} {path} HTTP/1.1{Style.RESET_ALL}" {stat_color(status_code)}{status_code} {responses.get(status_code)}{Fore.RESET}'
         )
-        writer.write(response.encode("utf-8"))
-        await writer.drain()
 
     async def graceful_exit(self):
         await self.lifespan_handler()
@@ -331,6 +299,7 @@ class NoctServ:
         else:
             self.listener = await asyncio.start_server(self.__handle, host, port)
             url = f"http://{host}:{port}"
-        print(f"Server is running on {url}")
+        logger.debug(f"Current using: NoctServ v{__version__}")
+        logger.info(f"Server is running on {url}")
         async with self.listener:
             await self.listener.serve_forever()

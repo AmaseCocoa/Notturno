@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 from functools import partial, wraps
+from http.client import responses
 from typing import Any, Callable, Dict
 
 try:
@@ -8,13 +9,14 @@ try:
 except ModuleNotFoundError:
     uvicorn = None
 
+
 from .core.http.serv import NoctServ
 from .core.router.regexp import PathRouter
 from .models.request import Request, from_asgi
 from .models.response import Response
 from .types import LOOP
-from .utils import jsonenc
-
+from .utils import http
+from .logger import logger
 
 class Notturno:
     def __init__(self, lifespan=None):
@@ -25,12 +27,15 @@ class Notturno:
         self.lifespan = lifespan
         self.middlewares = []
         self.http = NoctServ(self)
+        self.logger = logger
 
     def __is_non_gear(self):
-        if isinstance(self, Notturno) and type(self) is Notturno:
-            return True
-        else:
-            return False
+        return isinstance(self, Notturno)
+
+    def _raise_apptype_error(self, cls):
+        raise TypeError(
+            f"Notturno.Notturno or Notturno.Gear required, but got {cls.__class__}"
+        )
 
     def merge(self, cls):
         if isinstance(cls, Notturno):
@@ -38,14 +43,12 @@ class Notturno:
             self._internal_router.combine(cls._internal_router)
             cls.dependencies.update(self.dependencies)
             self.dependencies.update(cls.dependencies)
-            cls.middlewares += self.middlewares
-            cls.middlewares = list(set(cls.middlewares))
-            self.middlewares += cls.middlewares
-            self.middlewares = list(set(self.middlewares))
+
+            cls.middlewares = list(set(self.middlewares + cls.middlewares))
+            self.middlewares = list(set(cls.middlewares + self.middlewares))
+
         else:
-            raise TypeError(
-                f"Notturno.Notturno or Notturno.Gear required, but got {cls.__class__}"
-            )
+            self._raise_apptype_error(cls)
 
     def add_dependency(self, name: str, instance):
         self.dependencies[name] = instance
@@ -56,9 +59,6 @@ class Notturno:
         def decorator(func):
             @wraps(func)
             async def wrapper(*args, **kwargs):
-                #                for name in dependency_names:
-                #                    if name in self.dependencies:
-                #                        kwargs[name] = self.dependencies[name]
                 kwargs.update(
                     {
                         name: self.dependencies[name]
@@ -101,39 +101,36 @@ class Notturno:
                     await send({"type": "lifespan.shutdown.complete"})
                     return
 
-    async def __asgi_http_handle(self, scope: Dict[str, Any], receive: Any, send: Any):
+    async def __send_error(self, send, status: int):
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [[b"Content-Type", b"text/plain"]],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": responses.get(status).encode("utf-8"),
+                "more_body": False,
+            }
+        )
+
+    async def __asgi_http_handle(
+        self, scope: Dict[str, Any], receive: Any, send: Any
+    ):
         route, params = await self.resolve(scope["method"], scope["path"])
         if not route:
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 404,
-                    "headers": [[b"Content-Type", b"text/plain"]],
-                }
-            )
-            await send(
-                {
-                    "type": "http.response.body",
-                    "body": b"Not Found",
-                    "more_body": False,
-                }
-            )
+            await self.__send_error(send, 404)
             return
         req = await from_asgi(scope, receive)
         arg_name = await self._route(func=route, is_type=Request)
         if self.middleware:
-            if self.middleware != []:
-                route = partial(route, **params)
-
-                async def call_next(request):
-                    if arg_name:
-                        return await route(**{arg_name: request})
-                    else:
-                        return await route()
-
-                for middleware in reversed(self.middlewares):
-                    call_next = partial(middleware, call_next=call_next)
-                resp = await call_next(req)
+            route = partial(route, **params)
+            resp = await http.wrap_middleware(
+                route, req, http.convert_body, self.middlewares, arg_name
+            )
         else:
             if arg_name:
                 params[arg_name] = req
@@ -141,29 +138,7 @@ class Notturno:
                 resp = await route(**params)
             else:
                 resp = route(**params)
-        resp = await self._convert_response(resp)
-        content_type = None
-        if isinstance(resp.body, dict):
-            resp.body = jsonenc.dumps(resp.body)
-            content_type = "application/json"
-        elif isinstance(resp.body, list):
-            resp.body = b"".join([s.encode("utf-8") for s in resp.body])
-            content_type = "application/json"
-        elif isinstance(resp.body, str):
-            resp.body = resp.body.encode()
-            content_type = "text/plain"
-        elif isinstance(resp.body, bytes):
-            content_type = "application/octet-stream"
-        elif isinstance(resp.body, int) or isinstance(resp.body, float):
-            resp.body = resp.body.to_bytes(4, byteorder="big")
-            content_type = "text/plain"
-        else:
-            content_type = "application/octet-stream"
-        if not resp.headers.get("Content-Type"):
-            if resp.content_type:
-                resp.headers["Content-Type"] = resp.content_type
-            elif content_type:
-                resp.headers["Content-Type"] = content_type
+        resp = http.convert_body(resp)
         await send(
             {
                 "type": "http.response.start",
@@ -253,7 +228,7 @@ class Notturno:
         self, method: str, path: str
     ) -> tuple[None, dict] | tuple[Any | None, dict]:
         route = self._internal_router.match(path)
-        if not route:
+        if not route or not route.get(method):
             return (None, None)
         return (route.get(method)["func"], route.get(method)["params"])
 
