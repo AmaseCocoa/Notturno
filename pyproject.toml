@@ -5,7 +5,7 @@ description = "ultra-fast HTTP/ASGI Web Framework."
 authors = [
     {name = "AmaseCocoa", email = "cocoa@amase.cc"},
 ]
-dependencies = ["pydantic>=2.10.6,<3", "yarl>=1.18.3,<2","trio>=0.28.0,<1", "python-multipart>=0.0.20", "colorama>=0.4.6", "cython>=3.0.12", "h2>=4.2.0", "h11>=0.14.0"]
+dependencies = ["pydantic>=2.10.6,<3", "yarl>=1.18.3,<2","trio>=0.28.0,<1", "python-multipart>=0.0.20", "colorama>=0.4.6"]
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}
@@ -42,8 +42,6 @@ speed = [
     "orjson>=3.10.15,<4",
     "fast-query-parsers>=1.0.3,<2",
     "google-re2>=1.1.20240702,<2",
-    "brotli>=1.1.0; platform_python_implementation == 'CPython'",
-    "brotlicffi>=1.1.0.0; platform_python_implementation != 'CPython'",
 ]
 asgi = [
     "uvicorn>=0.34.0,<1",
@@ -55,6 +53,9 @@ template = [
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+
+[tool.pdm]
+distribution = true
 
 [dependency-groups]
 dev = [
@@ -68,12 +69,6 @@ bench = [
     "winloop>=0.1.8",
     "blacksheep>=2.0.8",
 ]
-http2 = [
-    "httpx[http2]>=0.28.1",
-]
 
 [tool.ruff]
 target-version = "py310"
-[tool.pdm]
-distribution = true
-
